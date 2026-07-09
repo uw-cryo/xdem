@@ -31,48 +31,45 @@ import pytest
 
 import xdem
 from xdem.workflows import Accuracy
-from xdem.workflows.workflows import Workflows
+from xdem.workflows.schemas import MIN_STATS
+from xdem.workflows.workflows import _ALIAS
 
 pytestmark = pytest.mark.filterwarnings("ignore::UserWarning")
 pytest.importorskip("cerberus")
 
 
-def test_init_diff_analysis(get_accuracy_object_with_run, tmp_path):
+def test_init_diff_analysis(get_accuracy_inputs_test):
     """
     Test initialization of accuracy class
     """
-    workflows = get_accuracy_object_with_run
+    workflows = Accuracy(get_accuracy_inputs_test)
+    workflows.run()
 
-    assert isinstance(workflows, Workflows)
-    assert isinstance(workflows, Accuracy)
-    assert Path(tmp_path / "plots").joinpath("reference_elev_map.png").exists()
-    assert Path(tmp_path / "plots").joinpath("to_be_aligned_elev_map.png").exists()
-    assert Path(tmp_path / "plots").joinpath("reference_elev_map.png").exists()
     dem = xdem.DEM(xdem.examples.get_path_test("longyearbyen_tba_dem"))
     mask = gu.Vector(xdem.examples.get_path_test("longyearbyen_glacier_outlines"))
     inlier_mask = ~mask.create_mask(dem)
-    assert workflows.inlier_mask == inlier_mask
+    assert workflows.to_be_aligned_elev.get_mask() == inlier_mask
 
 
-def test__get_reference_elevation(get_accuracy_inputs_config, tmp_path, caplog, assert_and_allow_log):
+def test__get_reference_elevation(get_accuracy_inputs_test, tmp_path, caplog, assert_and_allow_log):
     """
     Test _get_reference_elevation function
     """
 
-    user_config = get_accuracy_inputs_config
+    user_config = get_accuracy_inputs_test
     user_config["outputs"] = {"path": str(tmp_path)}
     workflows = Accuracy(user_config)
     workflows._load_data()
 
-    with pytest.raises(NotImplementedError, match="This is not implemented, add a reference DEM"):
+    with pytest.raises(NotImplementedError, match="This is not implemented, add a reference elevation"):
         workflows._get_reference_elevation()
 
-    user_config = get_accuracy_inputs_config
+    user_config = get_accuracy_inputs_test
     user_config["outputs"] = {"path": str(tmp_path)}
     user_config["inputs"]["reference_elev"] = None
 
     with caplog.at_level(logging.WARNING):
-        with pytest.raises(NotImplementedError, match="This is not implemented, add a reference DEM"):
+        with pytest.raises(NotImplementedError, match="This is not implemented, add a reference elevation"):
             workflows = Accuracy(user_config)
             workflows._load_data()
 
@@ -87,96 +84,63 @@ def test__compute_coregistration():
     """
 
 
-def test__get_stats(get_accuracy_inputs_config, tmp_path):
+@pytest.mark.parametrize(
+    "stats_name, res",
+    [
+        [MIN_STATS, [_ALIAS.get(k) for k in MIN_STATS]],
+        [list(_ALIAS.keys()), [_ALIAS.get(k) for k in _ALIAS.keys()]],
+        [["std"], ["Standard deviation"]],
+        [["standarddeviation"], ["Standard deviation"]],
+        [["std", "standarddeviation"], ["Standard deviation"]],
+    ],
+)
+def test__get_stats(get_accuracy_inputs_test, tmp_path, stats_name, res):
     """
     Test _get_stats function
     """
-    user_config = get_accuracy_inputs_config
+
+    user_config = get_accuracy_inputs_test
     user_config["outputs"] = {"path": str(tmp_path)}
+    user_config["statistics"] = stats_name
     workflows = Accuracy(user_config)
 
     dem = xdem.DEM(xdem.examples.get_path_test("longyearbyen_tba_dem"))
-    stats_gt = dem.get_stats(
-        [
-            "mean",
-            "median",
-            "max",
-            "min",
-            "sum",
-            "sumofsquares",
-            "90thpercentile",
-            "le90",
-            "nmad",
-            "rmse",
-            "std",
-            "standarddeviation",
-            "validcount",
-            "totalcount",
-            "percentagevalidpoints",
-        ]
-    )
+    stats_gt = dem.get_stats(stats_name)
 
-    # Aliases for nicer CSV headers
-    aliases = {
-        "mean": "Mean",
-        "median": "Median",
-        "max": "Maximum",
-        "min": "Minimum",
-        "sum": "Sum",
-        "sumofsquares": "Sum of squares",
-        "90thpercentile": "90th percentile",
-        "le90": "LE90",
-        "nmad": "NMAD",
-        "rmse": "RMSE",
-        "std": "STD",
-        "standarddeviation": "Standard deviation",
-        "validcount": "Valid count",
-        "totalcount": "Total count",
-        "percentagevalidpoints": "Percentage valid points",
-    }
-
-    stats_gt = {aliases.get(k, k): v for k, v in stats_gt.items()}
-    assert workflows._get_stats(dem) == stats_gt
+    assert list(set(workflows._get_stats(dem).keys())) == list(set(res))  # type: ignore
+    assert workflows._get_stats(dem) == {_ALIAS.get(k, k): v for k, v in stats_gt.items()}
 
 
-def test__compute_histogram(get_accuracy_object_with_run, tmp_path):
+@pytest.mark.parametrize("level", [1, 2])
+@pytest.mark.parametrize("generated_pdf", [True, False])
+def test_run(get_accuracy_inputs_test, tmp_path, level, generated_pdf):
     """
-    Test _compute_histogram function
+    Test run function with (process = True)
     """
 
-    _ = get_accuracy_object_with_run
-
-    assert Path(tmp_path / "plots").joinpath("elev_diff_histo.png").exists()
-
-
-@pytest.mark.parametrize(
-    "level",
-    [1, 2],
-)
-def test_run(get_accuracy_inputs_config, tmp_path, level):
-    """
-    Test run function
-    """
-
-    user_config = get_accuracy_inputs_config
+    user_config = get_accuracy_inputs_test
     user_config["outputs"] = {"path": str(tmp_path), "level": level}
     workflows = Accuracy(user_config)
     workflows.run()
 
     assert Path(tmp_path / "tables").joinpath("aligned_elev_stats.csv").exists()
 
-    assert Path(tmp_path / "plots").joinpath("diff_elev_after_coreg_map.png").exists()
-    assert Path(tmp_path / "plots").joinpath("diff_elev_before_coreg_map.png").exists()
+    if level == 1:
+        assert Path(tmp_path / "plots").joinpath("diff_elev_diff_coreg_map.png").exists()
+    else:
+        assert Path(tmp_path / "plots").joinpath("diff_elev_before_coreg_map.png").exists()
+        assert Path(tmp_path / "plots").joinpath("diff_elev_after_coreg_map.png").exists()
+
     assert Path(tmp_path / "plots").joinpath("elev_diff_histo.png").exists()
     assert Path(tmp_path / "plots").joinpath("masked_elev_map.png").exists()
-    assert Path(tmp_path / "plots").joinpath("reference_elev_map.png").exists()
-    assert Path(tmp_path / "plots").joinpath("to_be_aligned_elev_map.png").exists()
+    assert Path(tmp_path / "plots").joinpath("inputs.png").exists()
 
     assert Path(tmp_path / "rasters").joinpath("aligned_elev.tif").exists()
 
     assert Path(tmp_path).joinpath("report.html").exists()
     # sometimes the PDF creation fails for no reason
-    # assert Path(tmp_path).joinpath("report.pdf").exists()
+    if generated_pdf:
+        assert Path(tmp_path).joinpath("report.pdf").exists()
     assert Path(tmp_path).joinpath("used_config.yaml").exists()
 
     csv_files_level_1 = [
@@ -213,44 +177,42 @@ def test_run(get_accuracy_inputs_config, tmp_path, level):
             assert (Path(tmp_path) / "rasters" / file).exists()
 
 
-@pytest.mark.parametrize(
-    "level",
-    [1, 2],
-)
-def test_run_without_coreg(get_accuracy_inputs_config, tmp_path, level):
+@pytest.mark.parametrize("level", [1, 2])
+@pytest.mark.parametrize("generated_pdf", [True, False])
+def test_run_without_coreg(get_accuracy_inputs_test, tmp_path, level, generated_pdf):
     """
-    Test run function
+    Test run function with (process = False)
     """
 
-    user_config = get_accuracy_inputs_config
+    user_config = get_accuracy_inputs_test
     user_config["outputs"] = {"path": str(tmp_path), "level": level}
     user_config["coregistration"] = {"process": False}
     workflows = Accuracy(user_config)
     workflows.run()
 
-    assert Path(tmp_path / "tables").joinpath("diff_elev_stats.csv").exists()
+    assert Path(tmp_path / "tables").joinpath("diff_elev_without_coreg_stats.csv").exists()
 
-    assert Path(tmp_path / "plots").joinpath("diff_elev.png").exists()
-    assert not Path(tmp_path / "plots").joinpath("diff_elev_before_coreg.png").exists()
+    assert Path(tmp_path / "plots").joinpath("diff_elev_without_coreg_map.png").exists()
+    assert not Path(tmp_path / "plots").joinpath("diff_elev_diff_coreg_map.png").exists()
     assert not Path(tmp_path / "plots").joinpath("elev_diff_histo.png").exists()
     assert Path(tmp_path / "plots").joinpath("masked_elev_map.png").exists()
-    assert Path(tmp_path / "plots").joinpath("reference_elev_map.png").exists()
-    assert Path(tmp_path / "plots").joinpath("to_be_aligned_elev_map.png").exists()
+    assert Path(tmp_path / "plots").joinpath("inputs.png").exists()
 
     assert not Path(tmp_path / "rasters").joinpath("aligned_elev.tif").exists()
 
     assert Path(tmp_path).joinpath("report.html").exists()
     # sometimes the PDF creation fails for no reason
-    # assert Path(tmp_path).joinpath("report.pdf").exists()
+    if generated_pdf:
+        assert Path(tmp_path).joinpath("report.pdf").exists()
     assert Path(tmp_path).joinpath("used_config.yaml").exists()
 
     csv_files = [
-        "diff_elev_stats.csv",
+        "diff_elev_without_coreg_stats.csv",
         "reference_elev_stats.csv",
         "to_be_aligned_elev_stats.csv",
     ]
 
-    raster_files = ["diff_elev.tif"]
+    raster_files = ["diff_elev_without_coreg_map.tif"]
 
     if level == 1:
         for file in csv_files:
@@ -278,13 +240,13 @@ def test_run_without_coreg(get_accuracy_inputs_config, tmp_path, level):
         (False, None, "reference_elev", "same shape, transform and CRS"),
     ],
 )
-def test_run_prepare_datas(get_accuracy_inputs_config, tmp_path, config):
+def test_run_prepare_datas(get_accuracy_inputs_test, tmp_path, config):
     """
     Test preparation data with all sampling_grid values in a coreg/no coreg process.
     """
 
     process, sampling_grid, dem_to_crop, error = config
-    user_config = get_accuracy_inputs_config
+    user_config = get_accuracy_inputs_test
     user_config["outputs"] = {"path": str(tmp_path), "level": 2}
     user_config["coregistration"] = {"process": process}
     user_config["inputs"]["sampling_grid"] = sampling_grid
@@ -335,22 +297,25 @@ def test_run_prepare_datas(get_accuracy_inputs_config, tmp_path, config):
         ("to_be_aligned_elev", ["reference_elev", "to_be_aligned_elev"]),
     ],
 )
-def test_prepare_datas(get_accuracy_inputs_config, tmp_path, config):
+def test_prepare_datas(get_accuracy_inputs_test, tmp_path, config):
     """
     Test preparation data with all sampling_grid values
     """
 
     sampling_grid, dem_to_crop_list = config
-    user_config = get_accuracy_inputs_config
+    user_config = get_accuracy_inputs_test
 
     # Save path before crop(s)
     original_ref_path = user_config["inputs"]["reference_elev"]["path_to_elev"]
     original_tba_path = user_config["inputs"]["to_be_aligned_elev"]["path_to_elev"]
+    user_config["inputs"]["reference_elev"]["path_to_mask"] = None
+    user_config["inputs"]["to_be_aligned_elev"]["path_to_mask"] = None
 
     # Update user_config
     user_config["outputs"] = {"path": str(tmp_path), "level": 2}
     user_config["coregistration"] = {"process": False}
     user_config["inputs"]["sampling_grid"] = sampling_grid
+    user_config["inputs"]["reference_elev"]["path_to_mask"] = None
     user_config["inputs"]["to_be_aligned_elev"]["path_to_mask"] = None
 
     # Init crops possible values
@@ -423,26 +388,106 @@ def test_prepare_datas(get_accuracy_inputs_config, tmp_path, config):
             assert np.isnan(reference_elev_reprojected_mean)
 
 
-def test_create_html(tmp_path, get_accuracy_object_with_run):
+@pytest.mark.parametrize(
+    "masked",
+    [
+        [True, True],
+        [False, True],
+        [True, False],
+        [False, False],
+    ],
+)
+def test_mask(tmp_path, get_accuracy_inputs_test, masked):
     """
-    Test create_html function
+    Test mask initialization and correg
     """
-    _ = get_accuracy_object_with_run
+    user_config = get_accuracy_inputs_test
+    masked_ref, masked_tba = masked
+    user_config["outputs"] = {"path": str(tmp_path), "level": 2}
+    ref_dem_path = xdem.examples.get_path_test("longyearbyen_ref_dem")
+    tba_dem_path = xdem.examples.get_path_test("longyearbyen_tba_dem")
+    mask_ref_dem_path = xdem.examples.get_path_test("longyearbyen_glacier_outlines")
+    mask_tba_dem_path = xdem.examples.get_path_test("longyearbyen_glacier_outlines_2010")
 
-    assert Path(tmp_path).joinpath("report.html").exists()
+    # Create 1/2 mask (up) for ref and 1/2 mask (bottom) for tba
+    ref_dem = xdem.DEM(ref_dem_path)
+    ref_dem.load()
+    tba_dem = xdem.DEM(tba_dem_path)
+    tba_dem.load()
+    ref_mask = gu.Vector(mask_ref_dem_path)
+    tba_mask = gu.Vector(mask_tba_dem_path)
 
+    user_config["inputs"]["reference_elev"]["path_to_elev"] = ref_dem_path
+    if masked_ref:
+        inlier_mask = ~ref_mask.create_mask(ref_dem)
+        inlier_mask_reproject = inlier_mask.reproject(ref_dem).crop(ref_dem)
+        ref_dem.set_mask(~inlier_mask_reproject)
+        user_config["inputs"]["reference_elev"]["path_to_mask"] = mask_ref_dem_path
+    else:
+        user_config["inputs"]["reference_elev"]["path_to_mask"] = None
 
-def test_mask_init(tmp_path, get_accuracy_inputs_config):
-    """
-    Test mask initialization
-    """
-    user_config = get_accuracy_inputs_config
-    user_config["outputs"] = {"path": str(tmp_path)}
-    del user_config["inputs"]["reference_elev"]["path_to_mask"]
+    user_config["inputs"]["to_be_aligned_elev"]["path_to_elev"] = tba_dem_path
+    if masked_tba:
+        inlier_mask = ~tba_mask.create_mask(tba_dem)
+        inlier_mask_reproject = inlier_mask.reproject(tba_dem).crop(tba_dem)
+        tba_dem.set_mask(~inlier_mask_reproject)
+        user_config["inputs"]["to_be_aligned_elev"]["path_to_mask"] = mask_tba_dem_path
+    else:
+        user_config["inputs"]["to_be_aligned_elev"]["path_to_mask"] = None
+
+    # Apply to config dict
     workflows = Accuracy(user_config)
-    workflows._load_data()
-    dem = xdem.DEM(xdem.examples.get_path_test("longyearbyen_tba_dem"))
-    mask = gu.Vector(xdem.examples.get_path_test("longyearbyen_glacier_outlines"))
-    inlier_mask = ~mask.create_mask(dem)
-    assert workflows.inlier_mask == inlier_mask
-    assert Path(tmp_path / "plots").joinpath("masked_elev_map.png").exists()
+    workflows.run()
+
+    # Verify 1/2 mask application for ref data
+    stats_ref = pd.read_csv(Path(tmp_path / "tables" / "reference_elev_stats.csv").as_posix())
+    assert stats_ref["Valid count"].values[0] == ref_dem.get_stats("Valid count")
+
+    # Count 1/2 mask application for tba data
+    stats_tba = pd.read_csv(Path(tmp_path / "tables" / "to_be_aligned_elev_stats.csv").as_posix())
+    assert stats_tba["Valid count"].values[0] == tba_dem.get_stats("Valid count")
+
+    stats_tba_aligned = pd.read_csv(Path(tmp_path / "tables" / "aligned_elev_stats.csv").as_posix())
+    aligned_tba = tba_dem.coregister_3d(ref_dem, xdem.coreg.LZD(subsample=10000), random_state=42)
+    assert stats_tba_aligned["Valid count"].values[0] == aligned_tba.get_stats("Valid count")
+
+    # Count full mask on diff elev data
+    stats_before = pd.read_csv(Path(tmp_path / "tables" / "diff_elev_before_coreg_stats.csv").as_posix())
+    stats_after = pd.read_csv(Path(tmp_path / "tables" / "diff_elev_after_coreg_stats.csv").as_posix())
+
+    diff_before = tba_dem - ref_dem
+    assert stats_before["Valid count"].values[0] == diff_before.get_stats("Valid count")
+    diff_after = aligned_tba.reproject(ref_dem) - ref_dem
+    assert stats_after["Valid count"].values[0] == diff_after.get_stats("Valid count")
+
+
+@pytest.mark.skip("Todo when VCRS will be a part of CRS")
+@pytest.mark.parametrize("vcrs_first_step", [[None, "Ellipsoid"], ["Ellipsoid", None]])
+# @pytest.mark.parametrize("vcrs_second_step", [[None, "EGM96"],["EGM96", None]])
+@pytest.mark.parametrize("sampling_grid_first_step", ["reference_elev", "to_be_aligned_elev"])
+# @pytest.mark.parametrize("sampling_grid_second_step", ["reference_elev", "to_be_aligned_elev"])
+def test_vcrs_change(
+    tmp_path, get_accuracy_inputs_test, vcrs_first_step, sampling_grid_first_step  # vcrs_second_step,
+):
+    user_config = get_accuracy_inputs_test
+    user_config["inputs"]["reference_elev"]["force_vcrs"] = vcrs_first_step[0]
+    user_config["inputs"]["to_be_aligned_elev"]["force_vcrs"] = vcrs_first_step[1]
+
+    ref = xdem.DEM(user_config["inputs"]["reference_elev"]["path_to_elev"])
+    ref.set_vcrs("Ellipsoid")
+    ref.to_vcrs("EGM96", inplace=True)
+
+    user_config["inputs"]["reference_elev"]["path_to_mask"] = None
+    user_config["inputs"]["sampling_grid"] = sampling_grid_first_step
+    user_config["outputs"] = {"path": str(tmp_path), "level": 2}
+    workflows = Accuracy(user_config)
+    workflows.run()
+
+    if sampling_grid_first_step == "reference_elev":
+        vcrs_res = vcrs_first_step[0]
+    else:
+        vcrs_res = vcrs_first_step[1]
+
+    assert xdem.DEM(Path(tmp_path / "rasters" / "reference_elev_reprojected.tif")).vcrs == vcrs_res
+    assert xdem.DEM(Path(tmp_path / "rasters" / "to_be_aligned_elev_reprojected.tif")).vcrs == vcrs_res
+    assert xdem.DEM(Path(tmp_path / "rasters" / "aligned_elev.tif")).vcrs == vcrs_res
